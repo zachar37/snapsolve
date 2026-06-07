@@ -79,7 +79,7 @@ function deriveNumbers(cells: boolean[][]): { row: number; col: number; n: numbe
 async function extractGrid(base64: string, mimeType: ImageMime) {
   console.log('[solve] calling Claude for grid (row-string method)...');
   const res = await client.messages.create({
-    model: 'claude-3-5-sonnet-latest',
+    model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     messages: [
       {
@@ -136,7 +136,7 @@ The "grid" array must have exactly "rows" strings, each exactly "cols" character
 async function extractClues(base64: string, mimeType: ImageMime) {
   console.log('[solve] calling Claude for clues...');
   const res = await client.messages.create({
-    model: 'claude-3-5-sonnet-latest',
+    model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     messages: [
       {
