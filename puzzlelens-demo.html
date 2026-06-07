@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <title>PuzzleLens · Camera Solver + Ad Arbitrage</title>
+    <!-- Tailwind + Inter font -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .sharpness-glow {
+            box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.6), 0 0 0 4px rgba(52, 211, 153, 0.3);
+        }
+        .cell-number {
+            position: absolute;
+            top: 2px;
+            left: 3px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: #4b5563;
+        }
+    </style>
+</head>
+<body class="bg-zinc-950 text-white">
+<div id="app" class="max-w-lg mx-auto relative min-h-screen flex flex-col">
+    <!-- dynamic content will be rendered by JS -->
+</div>
+<script>
+    // ----------------------------------------------
+    // 1. APP STATE
+    // ----------------------------------------------
+    let currentState = 'splash'; // splash, camera, preview, solving, solved
+    let cameraStream = null;
+    let videoRef = null;
+    let canvasRef = null;
+    let scratchCanvas = null;
+    let focusInterval = null;
+    let autoMode = true;
+    let focusState = 'scanning'; // scanning, locked, snapping
+    let lockCounter = 0;
+    let didAutoSnap = false;
+    let capturedPhotoDataUrl = null;
+    let capturedFile = null;
+    // Puzzle data (simulated after capture)
+    let currentPuzzle = null;      // { rows, cols, cells, numbers, across, down, letterMap, solutionMap }
+    let revealedCells = new Set();   // keys "r,c" manually revealed
+    let showAllAnswers = false;
+    let puzzlesSolvedCount = 0;
+    let totalRevenue = 0.0;
+    // DOM elements (to be created after mount)
+    let rootEl;
+    let videoElement, canvasElement;
+    // ----------------------------------------------
+    // 2. HELPER: SHARPNESS DETECTION (from your code)
+    // ----------------------------------------------
+    function sharpnessScore(video, scratch) {
+        const SIZE = 120;
+        const ctx = scratch.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return 0;
+        scratch.width = SIZE;
+        scratch.height = SIZE;
+        const vw = video.videoWidth || video.clientWidth || 1280;
+        const vh = video.videoHeight || video.clientHeight || 720;
+        const crop = Math.min(vw, vh) * 0.5;
+        const sx = (vw - crop) / 2;
+        const sy = (vh - crop) / 2;
+        ctx.drawImage(video, sx, sy, crop, crop, 0, 0, SIZE, SIZE);
+        const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
+        let sum = 0, sumSq = 0, n = 0;
+        for (let i = 0; i < SIZE * SIZE - 1; i++) {
+            const p = i * 4;
+            const g0 = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+            const p1 = (i + 1) * 4;
+            const g1 = 0.299 * data[p1] + 0.587 * data[p1 + 1] + 0.114 * data[p1 + 2];
+            const d = g0 - g1;
+            sum += d;
+            sumSq += d * d;
+            n++;
+        }
+        const mean = sum / n;
+        return (sumSq / n) - mean * mean;
+    }
+    // ----------------------------------------------
+    // 3. SIMULATED AI: generate puzzle from image
+    // ----------------------------------------------
+    function generatePuzzleFromImage(dataUrl) {
+        const hash = (str) => {
+            let h = 0;
+            for (let i = 0; i < str.length; i++) h = ((h << 5) - h) + str.charCodeAt(i) | 0;
+            return Math.abs(h);
+        };
+        const seed = hash(dataUrl.slice(0, 200));
+
+        const rows = 13, cols = 13;
+        const cells = Array(rows).fill().map(() => Array(cols).fill(true));
+        for (let i = 0; i < rows; i++) {
+            for (let j = 0; j < cols; j++) {
+                if ((i === 2 && j === 5) || (i === 5 && j === 2) || (i === 8 && j === 8) || (i === 10 && j === 4)) cells[i][j] = false;
+                if ((i === 3 && j === 9) || (i === 9 && j === 3)) cells[i][j] = false;
+            }
+        }
+
+        const numbers = [];
+        let nextNum = 1;
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (!cells[r][c]) continue;
+                const leftIsBlack = c === 0 || !cells[r][c-1];
+                const aboveIsBlack = r === 0 || !cells[r-1][c];
+                if (leftIsBlack || aboveIsBlack) {
+                    numbers.push({ row: r, col: c, n: nextNum++ });
+                }
+            }
+        }
+
+        const wordBank = ["APPLE", "BRAIN", "CLOUD", "DRIVE", "EAGLE", "FLAME", "GRASS", "HEART", "INPUT", "JOYFUL", "KAYAK", "LIGHT", "MOTOR", "NIGHT", "OCEAN", "PUZZLE", "QUICK", "RADIO", "STORM", "TRUTH", "ULTRA", "VISION", "WHEEL", "XENON", "YOUTH", "ZEBRA"];
+        const acrossList = [];
+        const downList = [];
+        const letterMap = new Map();
+        numbers.forEach(({ row, col, n }, idx) => {
+            const word = wordBank[(seed + idx) % wordBank.length];
+            let canAcross = true;
+            for (let i = 0; i < word.length; i++) {
+                if (col + i >= cols || !cells[row][col + i]) { canAcross = false; break; }
+            }
+            if (canAcross && (acrossList.length < 12)) {
+                acrossList.push({ n, clue: `Across ${n}: ${word.toLowerCase()} definition`, answer: word });
+                for (let i = 0; i < word.length; i++) {
+                    const key = `${row},${col + i}`;
+                    if (!letterMap.has(key)) letterMap.set(key, word[i]);
+                }
+            }
+            let canDown = true;
+            for (let i = 0; i < word.length; i++) {
+                if (row + i >= rows || !cells[row + i][col]) { canDown = false; break; }
+            }
+            if (canDown && (downList.length < 12)) {
+                downList.push({ n, clue: `Down ${n}: ${word.toLowerCase()} hint`, answer: word });
+                for (let i = 0; i < word.length; i++) {
+                    const key = `${row + i},${col}`;
+                    if (!letterMap.has(key)) letterMap.set(key, word[i]);
+                }
+            }
+        });
+
+        return {
+            rows, cols, cells, numbers,
+            across: acrossList,
+            down: downList,
+            letterMap: letterMap,
+            solutionMap: new Map(letterMap)
+        };
+    }
+    // ----------------------------------------------
+    // 4. AD REVENUE LOGIC
+    // ----------------------------------------------
+    function addRevenue(amount, reason) {
+        totalRevenue += amount;
+        document.getElementById('totalRevenue').innerText = `$${totalRevenue.toFixed(5)}`;
+        const logDiv = document.getElementById('adLog');
+        const entry = document.createElement('div');
+        entry.className = 'text-xs text-zinc-400 border-b border-zinc-800 py-1';
+        entry.innerText = `[${new Date().toLocaleTimeString()}] +$${amount.toFixed(5)} · ${reason}`;
+        logDiv.prepend(entry);
+        if (logDiv.children.length > 12) logDiv.removeChild(logDiv.lastChild);
+    }
+    function triggerRewardedAd() {
+        addRevenue(0.025, "🎥 Rewarded video (user opt-in)");
+        const toast = document.createElement('div');
+        toast.className = 'fixed bottom-24 left-4 right-4 bg-emerald-600 text-white text-center py-2 rounded-full text-sm z-50 animate-pulse';
+        toast.innerText = '💰 +$0.025 from rewarded ad!';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
+    }
+    function triggerBannerAd() {
+        addRevenue(0.002, "📢 Banner impression (programmatic)");
+    }
+    function onPuzzleSolved() {
+        if (currentPuzzle && puzzlesSolvedCount > 0) return;
+        puzzlesSolvedCount++;
+        document.getElementById('solvedCount').innerText = puzzlesSolvedCount;
+        addRevenue(0.010, "🧩 Puzzle solved (base reward)");
+        addRevenue(0.001, "📱 Auto interstitial ad impression");
+        addRevenue(0.0005, "⚡ Arbitrage fill bonus");
+        const solvedMsg = document.createElement('div');
+        solvedMsg.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50';
+        solvedMsg.innerHTML = `<div class="bg-zinc-900 p-6 rounded-2xl text-center"><div class="text-4xl mb-2">✅</div><div class="text-xl font-bold">Puzzle solved!</div><div class="text-sm text-zinc-400 mt-1">+$0.0115 revenue</div></div>`;
+        document.body.appendChild(solvedMsg);
+        setTimeout(() => solvedMsg.remove(), 1500);
+    }
+    // ----------------------------------------------
+    // 5. GRID RENDERING
+    // ----------------------------------------------
+    function renderGrid() {
+        if (!currentPuzzle) return;
+        const container = document.getElementById('gridContainer');
+        if (!container) return;
+        const { rows, cols, cells, numbers, solutionMap } = currentPuzzle;
+        const screenW = Math.min(window.innerWidth, 500);
+        const cellSize = Math.floor((screenW - 40) / cols);
+        container.style.display = 'grid';
+        container.style.gridTemplateColumns = `repeat(${cols}, ${cellSize}px)`;
+        container.style.width = cellSize * cols + 'px';
+        container.innerHTML = '';
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const isWhite = cells[r][c];
+                const key = `${r},${c}`;
+                const number = numbers.find(n => n.row === r && n.col === c)?.n;
+                const correctLetter = solutionMap.get(key) || '';
+                const displayLetter = (showAllAnswers || revealedCells.has(key)) ? correctLetter : '';
+
+                if (isWhite) {
+                    const btn = document.createElement('button');
+                    btn.className = 'relative flex items-center justify-center bg-white text-black font-bold border border-zinc-300 hover:bg-zinc-100 transition-colors';
+                    btn.style.width = `${cellSize}px`;
+                    btn.style.height = `${cellSize}px`;
+                    btn.style.fontSize = `${Math.max(14, cellSize * 0.35)}px`;
+                    btn.innerText = displayLetter;
+                    if (number) {
+                        const numSpan = document.createElement('span');
+                        numSpan.className = 'absolute top-0.5 left-1 text-[9px] font-bold text-zinc-500';
+                        numSpan.innerText = number;
+                        btn.appendChild(numSpan);
+                    }
+                    btn.onclick = () => {
+                        if (revealedCells.has(key)) revealedCells.delete(key);
+                        else revealedCells.add(key);
+                        renderGrid();
+                    };
+                    container.appendChild(btn);
+                } else {
+                    const black = document.createElement('div');
+                    black.className = 'bg-zinc-800 border border-zinc-700';
+                    black.style.width = `${cellSize}px`;
+                    black.style.height = `${cellSize}px`;
+                    container.appendChild(black);
+                }
+            }
+        }
+    }
+    // ----------------------------------------------
+    // 6. CAPTURE & ANALYZE
+    // ----------------------------------------------
+    function capturePhotoAndSolve() {
+        if (!videoElement || !canvasElement) return;
+        const video = videoElement;
+        const w = video.videoWidth || video.clientWidth || 1280;
+        const h = video.videoHeight || video.clientHeight || 720;
+        canvasElement.width = w;
+        canvasElement.height = h;
+        const ctx = canvasElement.getContext('2d');
+        ctx.drawImage(video, 0, 0, w, h);
+        const dataUrl = canvasElement.toDataURL('image/jpeg', 0.92);
+        capturedPhotoDataUrl = dataUrl;
+
+        if (focusInterval) clearInterval(focusInterval);
+        if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+        cameraStream = null;
+
+        currentState = 'solving';
+        renderUI();
+
+        setTimeout(() => {
+            currentPuzzle = generatePuzzleFromImage(dataUrl);
+            revealedCells.clear();
+            showAllAnswers = false;
+            currentState = 'solved';
+            renderUI();
+            if (!window._claimedForThisPuzzle) {
+                window._claimedForThisPuzzle = true;
+                onPuzzleSolved();
+            }
+            renderGrid();
+        }, 1200);
+    }
+    // ----------------------------------------------
+    // 7. CAMERA + FOCUS LOOP
+    // ----------------------------------------------
+    async function startCamera() {
+        if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            cameraStream = stream;
+            if (videoElement) {
+                videoElement.srcObject = stream;
+                await videoElement.play();
+                startFocusLoop();
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Camera permission denied or error');
+            currentState = 'splash';
+            renderUI();
+        }
+    }
+    function startFocusLoop() {
+        if (focusInterval) clearInterval(focusInterval);
+        if (!scratchCanvas) scratchCanvas = document.createElement('canvas');
+        lockCounter = 0;
+        didAutoSnap = false;
+        focusState = 'scanning';
+        const scores = [];
+        focusInterval = setInterval(() => {
+            if (!videoElement || videoElement.readyState < 2) return;
+            const score = sharpnessScore(videoElement, scratchCanvas);
+            scores.push(score);
+            if (scores.length > 6) scores.shift();
+            if (scores.length < 3) return;
+            const avg = scores.reduce((a,b)=>a+b,0)/scores.length;
+            const recent = scores.slice(-3);
+            const recentAvg = recent.reduce((a,b)=>a+b,0)/recent.length;
+            const isSharp = recentAvg > Math.max(avg * 1.2, 38);
+            if (isSharp) {
+                lockCounter++;
+            } else {
+                lockCounter = Math.max(0, lockCounter-1);
+                if (lockCounter === 0) focusState = 'scanning';
+            }
+            if (lockCounter >= 3) {
+                focusState = 'locked';
+                if (autoMode && !didAutoSnap) {
+                    didAutoSnap = true;
+                    focusState = 'snapping';
+                    setTimeout(() => capturePhotoAndSolve(), 400);
+                }
+            }
+            const badge = document.getElementById('focusBadge');
+            if (badge) badge.innerText =
+                focusState === 'snapping' ? '📸 Auto — snapping…' :
+                focusState === 'locked'   ? '✓ Focus locked' : '🔍 Scanning...';
+        }, 300);
+    }
+    // ----------------------------------------------
+    // 8. UI RENDER
+    // ----------------------------------------------
+    function renderUI() {
+        if (!rootEl) return;
+        if (currentState === 'splash') {
+            rootEl.innerHTML = `
+                <div class="min-h-screen flex flex-col items-center justify-center px-6">
+                    <div class="w-20 h-20 bg-violet-600 rounded-3xl flex items-center justify-center mb-6 shadow-lg">
+                        <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    </div>
+                    <h1 class="text-4xl font-bold mb-2">PuzzleLens</h1>
+                    <p class="text-zinc-400 mb-12 text-center">Camera + AI puzzle solver + Ad arbitrage</p>
+                    <button id="startCameraBtn" class="w-full max-w-sm bg-white text-black rounded-3xl py-4 text-xl font-bold">📸 Open Camera</button>
+                    <p class="text-zinc-600 text-xs mt-6">Auto-focus capture & revenue loops</p>
+                </div>
+            `;
+            document.getElementById('startCameraBtn')?.addEventListener('click', () => {
+                currentState = 'camera';
+                renderUI();
+                setTimeout(() => startCamera(), 100);
+            });
+            return;
+        }
+
+        if (currentState === 'camera') {
+            rootEl.innerHTML = `
+                <div class="fixed inset-0 bg-black flex flex-col">
+                    <div class="relative flex-1">
+                        <video id="cameraVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
+                        <canvas id="captureCanvas" class="hidden"></canvas>
+                        <div class="absolute top-6 left-4 right-4 flex justify-between items-center">
+                            <div class="bg-black/50 rounded-full px-3 py-1 text-sm">📷 PuzzleLens</div>
+                            <button id="resetBtn" class="bg-black/50 p-2 rounded-full"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button>
+                        </div>
+                        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div class="w-64 h-64 border-2 rounded-2xl border-white/70 shadow-lg"></div>
+                        </div>
+                        <div class="absolute bottom-32 left-0 right-0 flex flex-col items-center gap-2">
+                            <div id="focusBadge" class="bg-black/60 backdrop-blur px-4 py-1.5 rounded-full text-xs font-semibold">🔍 Scanning...</div>
+                            <button id="toggleAutoBtn" class="text-xs px-3 py-1 rounded-full border border-zinc-600">Auto-snap ON</button>
+                            <button id="manualCaptureBtn" class="mt-4 bg-white text-black rounded-full px-8 py-3 font-bold text-lg shadow-lg">SNAP</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            videoElement = document.getElementById('cameraVideo');
+            canvasElement = document.getElementById('captureCanvas');
+            if (cameraStream && videoElement && !videoElement.srcObject) {
+                videoElement.srcObject = cameraStream;
+                videoElement.play();
+            }
+            document.getElementById('manualCaptureBtn')?.addEventListener('click', () => capturePhotoAndSolve());
+            document.getElementById('toggleAutoBtn')?.addEventListener('click', (e) => {
+                autoMode = !autoMode;
+                e.target.innerText = autoMode ? 'Auto-snap ON' : 'Auto-snap OFF';
+            });
+            document.getElementById('resetBtn')?.addEventListener('click', () => {
+                if (focusInterval) clearInterval(focusInterval);
+                if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+                cameraStream = null;
+                currentState = 'splash';
+                renderUI();
+            });
+            return;
+        }
+
+        if (currentState === 'solving') {
+            rootEl.innerHTML = `
+                <div class="min-h-screen bg-black flex flex-col items-center justify-center">
+                    <div class="animate-spin rounded-full h-12 w-12 border-4 border-violet-500 border-t-transparent"></div>
+                    <p class="mt-4 text-white">Analyzing puzzle & generating grid...</p>
+                </div>
+            `;
+            return;
+        }
+
+        if (currentState === 'solved' && currentPuzzle) {
+            rootEl.innerHTML = `
+                <div class="min-h-screen bg-zinc-950 pb-24">
+                    <div class="sticky top-0 bg-zinc-950/90 backdrop-blur border-b border-zinc-800 px-4 py-3 flex justify-between items-center">
+                        <button id="backHomeBtn" class="text-sm text-zinc-400">← Home</button>
+                        <span class="font-semibold">PuzzleLens · Solved</span>
+                        <div></div>
+                    </div>
+                    <div class="p-4">
+                        <div class="flex justify-between items-center mb-4 bg-zinc-900 rounded-2xl p-3">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm font-medium">Show all answers</span>
+                                <div id="toggleAllSwitch" class="relative w-12 h-6 rounded-full bg-zinc-700 cursor-pointer">
+                                    <div id="toggleKnob" class="absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform"></div>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-xs text-zinc-400">Revenue: <span id="totalRevenue">$${totalRevenue.toFixed(5)}</span></div>
+                                <div class="text-xs text-zinc-400">Solved: <span id="solvedCount">${puzzlesSolvedCount}</span></div>
+                            </div>
+                        </div>
+                        <div id="gridContainer" class="flex justify-center mb-6"></div>
+                        <div class="bg-zinc-900 rounded-2xl p-4 mt-4">
+                            <div class="text-sm font-semibold mb-2">💰 Ad Arbitrage Engine</div>
+                            <div class="flex gap-3 mb-3">
+                                <button id="rewardedAdBtn" class="flex-1 bg-amber-500 text-black py-2 rounded-xl text-sm font-bold">🎬 Rewarded Ad (+$0.025)</button>
+                                <button id="bannerAdBtn" class="flex-1 bg-zinc-800 py-2 rounded-xl text-sm">📢 Banner (+$0.002)</button>
+                            </div>
+                            <div id="adLog" class="h-32 overflow-y-auto text-xs bg-black/30 rounded-xl p-2 space-y-1"></div>
+                        </div>
+                        <button id="newPuzzleBtn" class="w-full mt-5 bg-violet-600 py-3 rounded-2xl font-bold">📸 Capture New Puzzle</button>
+                    </div>
+                </div>
+            `;
+            renderGrid();
+            document.getElementById('totalRevenue').innerText = `$${totalRevenue.toFixed(5)}`;
+            document.getElementById('solvedCount').innerText = puzzlesSolvedCount;
+            let showAll = false;
+            const knob = document.getElementById('toggleKnob');
+            document.getElementById('toggleAllSwitch')?.addEventListener('click', () => {
+                showAll = !showAll;
+                showAllAnswers = showAll;
+                knob.style.transform = showAll ? 'translateX(24px)' : 'translateX(0px)';
+                renderGrid();
+            });
+            document.getElementById('rewardedAdBtn')?.addEventListener('click', triggerRewardedAd);
+            document.getElementById('bannerAdBtn')?.addEventListener('click', triggerBannerAd);
+            document.getElementById('newPuzzleBtn')?.addEventListener('click', () => {
+                if (focusInterval) clearInterval(focusInterval);
+                if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+                cameraStream = null;
+                window._claimedForThisPuzzle = false;
+                currentState = 'camera';
+                renderUI();
+                setTimeout(() => startCamera(), 100);
+            });
+            document.getElementById('backHomeBtn')?.addEventListener('click', () => {
+                if (focusInterval) clearInterval(focusInterval);
+                if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+                cameraStream = null;
+                currentState = 'splash';
+                renderUI();
+            });
+            return;
+        }
+    }
+
+    window.onload = () => {
+        rootEl = document.getElementById('app');
+        renderUI();
+    };
+</script>
+</body>
+</html>
