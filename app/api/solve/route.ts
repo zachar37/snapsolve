@@ -103,11 +103,10 @@ The "grid" array must have exactly "rows" strings, each exactly "cols" character
           },
         ],
       },
-      { role: 'assistant', content: '{' },
     ],
   });
 
-  const text = '{' + (res.content[0].type === 'text' ? res.content[0].text : '');
+  const text = res.content[0].type === 'text' ? res.content[0].text : '';
   console.log('[solve] grid raw response (first 500):', text.slice(0, 500));
 
   const raw = tryParseJson(text) as { rows: number; cols: number; grid: string[] };
@@ -160,11 +159,10 @@ Rules:
           },
         ],
       },
-      { role: 'assistant', content: '{' },
     ],
   });
 
-  const text = '{' + (res.content[0].type === 'text' ? res.content[0].text : '');
+  const text = res.content[0].type === 'text' ? res.content[0].text : '';
   console.log('[solve] clues raw response (first 300):', text.slice(0, 300));
   const parsed = tryParseJson(text) as Record<string, unknown>;
   console.log('[solve] clues parsed ok');
