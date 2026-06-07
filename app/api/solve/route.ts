@@ -53,6 +53,29 @@ function tryParseJson(raw: string): unknown {
   throw new Error(`Unparseable JSON. Raw (first 300 chars): ${raw.slice(0, 300)}`);
 }
 
+// ── Symmetry enforcement ─────────────────────────────────────────────────────
+// Standard American crosswords have 180° rotational symmetry.
+// If (r,c) and its mirror disagree, make BOTH black — Claude more often
+// misses black cells than adds phantom ones.
+function enforceSymmetry(cells: boolean[][]): { cells: boolean[][]; fixes: number } {
+  const rows = cells.length;
+  const cols = cells[0]?.length ?? 0;
+  const result = cells.map(row => [...row]);
+  let fixes = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const mr = rows - 1 - r;
+      const mc = cols - 1 - c;
+      if (result[r][c] !== result[mr][mc]) {
+        result[r][c] = false;   // black
+        result[mr][mc] = false; // black (mirror)
+        fixes++;
+      }
+    }
+  }
+  return { cells: result, fixes: Math.floor(fixes / 2) };
+}
+
 // ── Auto-number: derive clue numbers from cells grid ────────────────────────
 // A white cell gets a number if it starts an across word (leftmost in a run)
 // or a down word (topmost in a run). Run length must be ≥ 2.
@@ -88,13 +111,17 @@ async function extractGrid(base64: string, mimeType: ImageMime) {
           { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
           {
             type: 'text',
-            text: `This image contains a crossword puzzle. Focus on the BLANK grid (small corner numbers only — no filled-in letters).
+            text: `This image contains a crossword puzzle grid. Your job: map every square as black (#) or white (.).
 
-Draw the grid row by row as strings:
-- '#' for every BLACK (filled/blocked) square
-- '.' for every WHITE (open) square
-- Every string must be exactly the same length (number of columns)
-- Most newspaper crosswords are 15×15 — count carefully
+STEP 1 — Count columns in the TOP row by counting each individual square from left edge to right edge.
+STEP 2 — Count rows by counting squares from top edge to bottom edge.
+STEP 3 — For EACH row (top to bottom), write a string of '#' (black/filled square) and '.' (white/open square), left to right. Every row string must be the same length.
+
+KEY FACTS about American newspaper crosswords:
+- Grid is almost always 15×15 (sometimes 21×21 for Sunday)
+- The pattern is 180° rotationally symmetric: if square (r,c) is black, square (rows-1-r, cols-1-c) is also black
+- Black squares are solid dark/black filled. White squares have a number or are empty.
+- Roughly 15-20% of squares are black (about 34-45 black squares in a 15×15)
 
 Return ONLY this JSON (no prose, no markdown):
 {"rows":15,"cols":15,"grid":["...#...#..#....","...............", ...]}
@@ -121,14 +148,18 @@ The "grid" array must have exactly "rows" strings, each exactly "cols" character
     return Array.from({ length: cols }, (_, c) => rowStr[c] !== '#');
   });
 
+  // Enforce 180° rotational symmetry — catches missed black cells
+  const { cells: symCells, fixes } = enforceSymmetry(cells);
+  if (fixes > 0) console.log('[solve] symmetry fixed', fixes, 'cell pairs');
+
   // Derive numbers algorithmically — don't trust Claude to count them
-  const numbers = deriveNumbers(cells);
+  const numbers = deriveNumbers(symCells);
 
   console.log('[solve] grid ok — rows:', rows, 'cols:', cols,
-    'black cells:', cells.flat().filter(v => !v).length,
+    'black cells:', symCells.flat().filter(v => !v).length,
     'numbers:', numbers.length);
 
-  return { rows, cols, cells, numbers };
+  return { rows, cols, cells: symCells, numbers };
 }
 
 // ── Pass 2: clues + answers ───────────────────────────────────────────────────
@@ -144,18 +175,20 @@ async function extractClues(base64: string, mimeType: ImageMime) {
           { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
           {
             type: 'text',
-            text: `Read every Across and Down clue in this crossword photo exactly as printed, then solve them.
+            text: `Read every Across and Down clue visible in this crossword photo, then solve them.
 
 Return ONLY JSON — no prose, no markdown:
 {
-  "across": [{"n": 1, "clue": "exact clue text", "answer": "ANSWER"}],
-  "down":   [{"n": 1, "clue": "exact clue text", "answer": "ANSWER"}]
+  "across": [{"n": 1, "clue": "clue text", "answer": "ANSWER"}],
+  "down":   [{"n": 1, "clue": "clue text", "answer": "ANSWER"}]
 }
 
 Rules:
-- Copy clue text word for word.
+- Copy clue text as accurately as you can. If a word is unclear, make your best guess.
 - Answers uppercase, no spaces or punctuation.
-- Include every clue you can read.`,
+- Include EVERY clue you can partially or fully read — do not skip clues because the image is blurry.
+- If you cannot read a clue at all, omit it. Never refuse to return JSON.
+- Return empty arrays if nothing is readable: {"across":[],"down":[]}`,
           },
         ],
       },
@@ -202,6 +235,12 @@ export async function POST(req: Request) {
       down:    Array.isArray(clueData.down)   ? clueData.down   : [],
     };
 
+    const ratio = puzzle.across.length / Math.max(puzzle.down.length, 1);
+    if (ratio > 3 || ratio < 0.33) {
+      console.warn('[solve] WARNING: clue ratio suspicious —',
+        'across:', puzzle.across.length, 'down:', puzzle.down.length,
+        '— grid may be misread');
+    }
     console.log('[solve] success — rows:', puzzle.rows, 'cols:', puzzle.cols,
       'across:', puzzle.across.length, 'down:', puzzle.down.length);
     return Response.json({ ok: true, puzzle });
