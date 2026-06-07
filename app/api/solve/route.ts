@@ -119,7 +119,7 @@ STEP 3 — Count ROWS: count the individual squares in the leftmost column from 
 STEP 4 — For EACH row (top to bottom), write a string of '#' (black/filled square) and '.' (white/open square), left to right. Every string must be exactly COLS characters.
 
 RULES:
-- Do NOT assume 15×15. Count the actual grid. It may be 13×13, 13×14, 15×15, or another size.
+- Do NOT assume 15×15. Count the actual grid. This puzzle is likely 13 columns × 14 rows, but count carefully to confirm.
 - Black squares are solid dark/black filled. White squares have a small corner number or are empty.
 - The pattern has 180° rotational symmetry: if (r,c) is black then (rows-1-r, cols-1-c) is also black.
 - Every row string must be the same length (= number of columns you counted).
@@ -139,8 +139,8 @@ The "grid" array must have exactly "rows" strings, each exactly "cols" character
 
   const raw = tryParseJson(text) as { rows: number; cols: number; grid: string[] };
 
-  const rows = raw.grid?.length || Number(raw.rows) || 15;
-  const cols = raw.grid?.[0]?.length || Number(raw.cols) || 15;
+  const rows = raw.grid?.length || Number(raw.rows) || 14;
+  const cols = raw.grid?.[0]?.length || Number(raw.cols) || 13;
   const grid = raw.grid ?? [];
 
   // Build boolean cells — normalise row lengths in case Claude was inconsistent
