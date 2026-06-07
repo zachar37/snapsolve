@@ -113,20 +113,21 @@ async function extractGrid(base64: string, mimeType: ImageMime) {
             type: 'text',
             text: `This image contains a crossword puzzle grid. Your job: map every square as black (#) or white (.).
 
-STEP 1 — Count columns in the TOP row by counting each individual square from left edge to right edge.
-STEP 2 — Count rows by counting squares from top edge to bottom edge.
-STEP 3 — For EACH row (top to bottom), write a string of '#' (black/filled square) and '.' (white/open square), left to right. Every row string must be the same length.
+STEP 1 — Locate the grid boundary (ignore clue text, borders, labels).
+STEP 2 — Count COLUMNS: count the individual squares in the top row from left to right. Write down the number.
+STEP 3 — Count ROWS: count the individual squares in the leftmost column from top to bottom. Write down the number.
+STEP 4 — For EACH row (top to bottom), write a string of '#' (black/filled square) and '.' (white/open square), left to right. Every string must be exactly COLS characters.
 
-KEY FACTS about American newspaper crosswords:
-- Grid is almost always 15×15 (sometimes 21×21 for Sunday)
-- The pattern is 180° rotationally symmetric: if square (r,c) is black, square (rows-1-r, cols-1-c) is also black
-- Black squares are solid dark/black filled. White squares have a number or are empty.
-- Roughly 15-20% of squares are black (about 34-45 black squares in a 15×15)
+RULES:
+- Do NOT assume 15×15. Count the actual grid. It may be 13×13, 13×14, 15×15, or another size.
+- Black squares are solid dark/black filled. White squares have a small corner number or are empty.
+- The pattern has 180° rotational symmetry: if (r,c) is black then (rows-1-r, cols-1-c) is also black.
+- Every row string must be the same length (= number of columns you counted).
 
 Return ONLY this JSON (no prose, no markdown):
-{"rows":15,"cols":15,"grid":["...#...#..#....","...............", ...]}
+{"rows":<actual row count>,"cols":<actual col count>,"grid":["row0string","row1string", ...]}
 
-The "grid" array must have exactly "rows" strings, each exactly "cols" characters, using only '#' and '.'.`,
+The "grid" array must have exactly "rows" strings, each exactly "cols" characters long, using only '#' and '.'.`,
           },
         ],
       },
@@ -138,8 +139,8 @@ The "grid" array must have exactly "rows" strings, each exactly "cols" character
 
   const raw = tryParseJson(text) as { rows: number; cols: number; grid: string[] };
 
-  const rows = Number(raw.rows) || (raw.grid?.length ?? 15);
-  const cols = Number(raw.cols) || (raw.grid?.[0]?.length ?? 15);
+  const rows = raw.grid?.length || Number(raw.rows) || 15;
+  const cols = raw.grid?.[0]?.length || Number(raw.cols) || 15;
   const grid = raw.grid ?? [];
 
   // Build boolean cells — normalise row lengths in case Claude was inconsistent
