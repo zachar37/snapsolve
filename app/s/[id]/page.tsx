@@ -78,10 +78,12 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         }
 
         // Fix #3: Send only fileKey — no base64 dataUrl in sessionStorage.
+        // Use the direct URL stored at upload time if available
+        const fileUrl = sessionStorage.getItem(`ut_url_${fileKey}`) ?? undefined;
         const res  = await fetch('/api/solve', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ fileKey }),
+          body: JSON.stringify({ fileKey, fileUrl }),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error ?? 'Solve failed');

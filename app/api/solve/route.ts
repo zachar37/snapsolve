@@ -8,11 +8,12 @@ type ImageMime = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ── Fetch image from UploadThing ─────────────────────────────────────────────
-async function getImage(fileKey: string): Promise<{ base64: string; mimeType: ImageMime }> {
+async function getImage(fileKey: string, fileUrl?: string): Promise<{ base64: string; mimeType: ImageMime }> {
   const urls = [
+    // Use the direct URL from UploadThing upload response first (most reliable)
+    ...(fileUrl ? [fileUrl] : []),
     `https://utfs.io/f/${fileKey}`,
     `https://aqtpcqyz9z.ufs.sh/f/${fileKey}`,
-    `https://ufs.sh/f/${fileKey}`,
   ];
   for (const url of urls) {
     try {
@@ -180,13 +181,14 @@ export async function POST(req: Request) {
 
     const body    = await req.json();
     const fileKey = (body.fileKey ?? '') as string;
-    console.log('[solve] POST received, fileKey:', fileKey);
+    const fileUrl = (body.fileUrl ?? '') as string;
+    console.log('[solve] POST received, fileKey:', fileKey, 'fileUrl:', fileUrl ? 'provided' : 'none');
 
     if (!fileKey) {
       return Response.json({ error: 'fileKey is required' }, { status: 400 });
     }
 
-    const { base64, mimeType } = await getImage(fileKey);
+    const { base64, mimeType } = await getImage(fileKey, fileUrl || undefined);
 
     const [gridData, clueData] = await Promise.all([
       extractGrid(base64, mimeType),

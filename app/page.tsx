@@ -103,7 +103,10 @@ export default function Home() {
   const { startUpload, isUploading } = useUploadThing('puzzleUploader', {
     onClientUploadComplete: (res) => {
       const key = res[0]?.key;
+      const url = res[0]?.url;
       if (!key) { toast.error('No file key returned.'); setAppState('preview'); return; }
+      // Store the direct CDN URL so the solve page can use it without guessing
+      if (url) sessionStorage.setItem(`ut_url_${key}`, url);
       window.location.href = `/s/${key}`;
     },
     onUploadError: (err) => {
