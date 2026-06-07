@@ -111,23 +111,19 @@ async function extractGrid(base64: string, mimeType: ImageMime) {
           { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
           {
             type: 'text',
-            text: `This image contains a crossword puzzle grid. Your job: map every square as black (#) or white (.).
+            text: `This image contains a crossword puzzle grid (13 columns wide, 14 rows tall).
 
-STEP 1 — Locate the grid boundary (ignore clue text, borders, labels).
-STEP 2 — Count COLUMNS: count the individual squares in the top row from left to right. Write down the number.
-STEP 3 — Count ROWS: count the individual squares in the leftmost column from top to bottom. Write down the number.
-STEP 4 — For EACH row (top to bottom), write a string of '#' (black/filled square) and '.' (white/open square), left to right. Every string must be exactly COLS characters.
+Your ONLY job: identify every BLACK (filled/solid dark) square.
 
-RULES:
-- Do NOT assume 15×15. Count the actual grid. This puzzle is likely 13 columns × 14 rows, but count carefully to confirm.
-- Black squares are solid dark/black filled. White squares have a small corner number or are empty.
-- The pattern has 180° rotational symmetry: if (r,c) is black then (rows-1-r, cols-1-c) is also black.
-- Every row string must be the same length (= number of columns you counted).
+Use 0-based coordinates: row 0 = top row, col 0 = leftmost column.
+
+Scan each row from top to bottom, left to right. For each solid black square you see, record its [row, col].
 
 Return ONLY this JSON (no prose, no markdown):
-{"rows":<actual row count>,"cols":<actual col count>,"grid":["row0string","row1string", ...]}
+{"rows":14,"cols":13,"black":[[0,3],[0,6],[1,0], ...]}
 
-The "grid" array must have exactly "rows" strings, each exactly "cols" characters long, using only '#' and '.'.`,
+Where "black" is the array of [row,col] pairs for every black square.
+White squares (open/numbered) are NOT listed — only black ones.`,
           },
         ],
       },
@@ -137,17 +133,31 @@ The "grid" array must have exactly "rows" strings, each exactly "cols" character
   const text = res.content[0].type === 'text' ? res.content[0].text : '';
   console.log('[solve] grid raw response (first 500):', text.slice(0, 500));
 
-  const raw = tryParseJson(text) as { rows: number; cols: number; grid: string[] };
+  const raw = tryParseJson(text) as { rows: number; cols: number; black?: [number,number][]; grid?: string[] };
 
-  const rows = raw.grid?.length || Number(raw.rows) || 14;
-  const cols = raw.grid?.[0]?.length || Number(raw.cols) || 13;
-  const grid = raw.grid ?? [];
+  const rows = Number(raw.rows) || 14;
+  const cols = Number(raw.cols) || 13;
 
-  // Build boolean cells — normalise row lengths in case Claude was inconsistent
-  const cells: boolean[][] = Array.from({ length: rows }, (_, r) => {
-    const rowStr = (grid[r] ?? '').padEnd(cols, '#');
-    return Array.from({ length: cols }, (_, c) => rowStr[c] !== '#');
-  });
+  // Build cells — all white by default, then mark black squares
+  const cells: boolean[][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => true)
+  );
+
+  if (Array.isArray(raw.black)) {
+    // Coordinate-based format
+    for (const [r, c] of raw.black) {
+      if (r >= 0 && r < rows && c >= 0 && c < cols) cells[r][c] = false;
+    }
+    console.log('[solve] black cells from coordinates:', raw.black.length);
+  } else if (Array.isArray(raw.grid)) {
+    // Fallback: row-string format
+    for (let r = 0; r < rows; r++) {
+      const rowStr = (raw.grid[r] ?? '').padEnd(cols, '#');
+      for (let c = 0; c < cols; c++) {
+        if (rowStr[c] === '#') cells[r][c] = false;
+      }
+    }
+  }
 
   // Enforce 180° rotational symmetry — catches missed black cells
   const { cells: symCells, fixes } = enforceSymmetry(cells);
