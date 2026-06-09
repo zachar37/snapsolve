@@ -59,12 +59,19 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const [puzzle, setPuzzle]   = useState<Puzzle | null>(null);
   const [errorMsg, setError]  = useState('');
   const [fileKey, setFileKey] = useState('');
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   // Reveal state — each cell independently toggled, plus a show-all switch
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [showAll, setShowAll]   = useState(true);
 
-  useEffect(() => { params.then(({ id }) => setFileKey(id)); }, [params]);
+  useEffect(() => {
+    params.then(({ id }) => {
+      setFileKey(id);
+      const url = sessionStorage.getItem(`ut_url_${id}`);
+      if (url) setPhotoUrl(url);
+    });
+  }, [params]);
 
   useEffect(() => {
     if (!fileKey) return;
@@ -175,6 +182,14 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         {/* Done */}
         {status === 'done' && puzzle && (
           <>
+            {/* Original photo */}
+            {photoUrl && (
+              <div className="rounded-2xl overflow-hidden border border-zinc-800">
+                <p className="text-xs text-zinc-500 px-3 py-2 bg-zinc-900">Your photo</p>
+                <img src={photoUrl} alt="Original puzzle" className="w-full object-contain max-h-64" />
+              </div>
+            )}
+
             {/* Reveal all toggle */}
             <div className="flex items-center justify-between bg-zinc-900 border border-zinc-800 rounded-2xl px-5 h-14">
               <div className="flex items-center gap-2">
