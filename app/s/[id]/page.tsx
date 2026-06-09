@@ -37,16 +37,18 @@ function buildLetterMap(puzzle: Puzzle): Map<string, string> {
     const pos   = numToPos.get(n);
     if (!pos) return;
     const clean = answer.replace(/[\s\-]/g, '');
-    if (clean.length !== slotLength(puzzle, pos.row, pos.col, 'across')) return;
-    for (let i = 0; i < clean.length; i++) map.set(`${pos.row},${pos.col + i}`, clean[i]);
+    const len   = slotLength(puzzle, pos.row, pos.col, 'across');
+    const place = Math.min(clean.length, len);
+    for (let i = 0; i < place; i++) map.set(`${pos.row},${pos.col + i}`, clean[i]);
   });
 
   puzzle.down.forEach(({ n, answer }) => {
     const pos   = numToPos.get(n);
     if (!pos) return;
     const clean = answer.replace(/[\s\-]/g, '');
-    if (clean.length !== slotLength(puzzle, pos.row, pos.col, 'down')) return;
-    for (let i = 0; i < clean.length; i++) map.set(`${pos.row + i},${pos.col}`, clean[i]);
+    const len   = slotLength(puzzle, pos.row, pos.col, 'down');
+    const place = Math.min(clean.length, len);
+    for (let i = 0; i < place; i++) map.set(`${pos.row + i},${pos.col}`, clean[i]);
   });
 
   return map;
