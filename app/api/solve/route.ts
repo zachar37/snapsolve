@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import sharp from 'sharp';
 
 export const runtime    = 'nodejs';
 export const maxDuration = 60;
@@ -95,82 +96,84 @@ function deriveNumbers(cells: boolean[][]): { row: number; col: number; n: numbe
   return numbers;
 }
 
-// ── Pass 1: grid structure ─────────────────────────────────────────────────────
-// Row-string method: ask Claude to draw the grid as '#' (black) / '.' (white)
-// strings — much less error-prone than listing coordinates.
-// Numbers are derived algorithmically, not from Claude.
+// ── Pass 1: grid structure via pixel sampling ─────────────────────────────────
+// Step A: Claude finds the grid bounding box (easy visual task, very reliable).
+// Step B: sharp crops to that region, resizes to fixed cell size, samples each
+//         cell center. Dark pixel = black cell. No AI counting involved.
 async function extractGrid(base64: string, mimeType: ImageMime) {
-  console.log('[solve] calling Claude for grid (coordinate method)...');
-  const res = await client.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 4096,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
-          {
-            type: 'text',
-            text: `This image contains a crossword puzzle grid (13 columns wide, 14 rows tall).
+  const ROWS = 14, COLS = 13, CELL = 40;
 
-Your ONLY job: identify every BLACK (filled/solid dark) square.
-
-Use 0-based coordinates: row 0 = top row, col 0 = leftmost column.
-
-Scan each row from top to bottom, left to right. For each solid black square you see, record its [row, col].
-
-Return ONLY this JSON (no prose, no markdown):
-{"rows":14,"cols":13,"black":[[0,3],[0,6],[1,0], ...]}
-
-Where "black" is the array of [row,col] pairs for every black square.
-White squares (open/numbered) are NOT listed — only black ones.`,
-          },
-        ],
-      },
-    ],
+  // ── Step A: get grid boundary from Claude ──────────────────────────────────
+  console.log('[solve] asking Claude for grid boundary...');
+  const boundsRes = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 256,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
+        { type: 'text', text: `Find the crossword GRID in this image — the rectangular array of black and white squares (NOT the clue text columns on the left).
+Return ONLY JSON with its edges as fractions of total image size (0.0=top/left, 1.0=bottom/right):
+{"top":0.55,"left":0.45,"bottom":0.98,"right":0.99}` },
+      ],
+    }],
   });
 
-  const text = res.content[0].type === 'text' ? res.content[0].text : '';
-  console.log('[solve] grid raw response (first 500):', text.slice(0, 500));
+  const boundsText = boundsRes.content[0].type === 'text' ? boundsRes.content[0].text : '';
+  console.log('[solve] bounds response:', boundsText.slice(0, 200));
+  const b = tryParseJson(boundsText) as { top: number; left: number; bottom: number; right: number };
 
-  const raw = tryParseJson(text) as { rows: number; cols: number; black?: [number,number][]; grid?: string[] };
+  // Sanity-check bounds
+  const top    = Math.max(0,   Math.min(0.95, b.top    ?? 0.5));
+  const left   = Math.max(0,   Math.min(0.95, b.left   ?? 0.4));
+  const bottom = Math.max(top  + 0.05, Math.min(1, b.bottom ?? 1.0));
+  const right  = Math.max(left + 0.05, Math.min(1, b.right  ?? 1.0));
+  console.log('[solve] clamped bounds:', { top, left, bottom, right });
 
-  const rows = Number(raw.rows) || 14;
-  const cols = Number(raw.cols) || 13;
+  // ── Step B: crop + pixel-sample with sharp ─────────────────────────────────
+  const imgBuf = Buffer.from(base64, 'base64');
+  const meta   = await sharp(imgBuf).metadata();
+  const imgW   = meta.width  ?? 1000;
+  const imgH   = meta.height ?? 1000;
 
-  // Build cells — all white by default, then mark black squares
-  const cells: boolean[][] = Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => true)
+  const cropX = Math.floor(left   * imgW);
+  const cropY = Math.floor(top    * imgH);
+  const cropW = Math.max(1, Math.floor((right  - left) * imgW));
+  const cropH = Math.max(1, Math.floor((bottom - top)  * imgH));
+
+  const outW = COLS * CELL;
+  const outH = ROWS * CELL;
+
+  const { data } = await sharp(imgBuf)
+    .extract({ left: cropX, top: cropY, width: cropW, height: cropH })
+    .resize(outW, outH)
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  // Build cells — sample center of each cell
+  const cells: boolean[][] = Array.from({ length: ROWS }, () =>
+    Array.from({ length: COLS }, () => true)
   );
-
-  if (Array.isArray(raw.black)) {
-    // Coordinate-based format
-    for (const [r, c] of raw.black) {
-      if (r >= 0 && r < rows && c >= 0 && c < cols) cells[r][c] = false;
-    }
-    console.log('[solve] black cells from coordinates:', raw.black.length);
-  } else if (Array.isArray(raw.grid)) {
-    // Fallback: row-string format
-    for (let r = 0; r < rows; r++) {
-      const rowStr = (raw.grid[r] ?? '').padEnd(cols, '#');
-      for (let c = 0; c < cols; c++) {
-        if (rowStr[c] === '#') cells[r][c] = false;
-      }
+  let blackCount = 0;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const px = Math.floor((c + 0.5) * CELL);
+      const py = Math.floor((r + 0.5) * CELL);
+      const brightness = data[py * outW + px];
+      if (brightness < 100) { cells[r][c] = false; blackCount++; }
     }
   }
+  console.log('[solve] pixel-sampled black cells:', blackCount);
 
-  // Enforce 180° rotational symmetry — catches missed black cells
+  // Enforce 180° symmetry — corrects any sampling edge cases
   const { cells: symCells, fixes } = enforceSymmetry(cells);
-  if (fixes > 0) console.log('[solve] symmetry fixed', fixes, 'cell pairs');
+  if (fixes > 0) console.log('[solve] symmetry fixed', fixes, 'pairs');
 
-  // Derive numbers algorithmically — don't trust Claude to count them
   const numbers = deriveNumbers(symCells);
+  console.log('[solve] grid done — black:', symCells.flat().filter(v=>!v).length, 'numbers:', numbers.length);
 
-  console.log('[solve] grid ok — rows:', rows, 'cols:', cols,
-    'black cells:', symCells.flat().filter(v => !v).length,
-    'numbers:', numbers.length);
-
-  return { rows, cols, cells: symCells, numbers };
+  return { rows: ROWS, cols: COLS, cells: symCells, numbers };
 }
 
 // ── Pass 2: clues + answers ───────────────────────────────────────────────────
