@@ -100,9 +100,9 @@ function deriveNumbers(cells: boolean[][]): { row: number; col: number; n: numbe
 // strings — much less error-prone than listing coordinates.
 // Numbers are derived algorithmically, not from Claude.
 async function extractGrid(base64: string, mimeType: ImageMime) {
-  console.log('[solve] calling Claude for grid (row-string method)...');
+  console.log('[solve] calling Claude for grid (coordinate method)...');
   const res = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-opus-4-6',
     max_tokens: 4096,
     messages: [
       {
