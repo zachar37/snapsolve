@@ -60,7 +60,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
   // Reveal state — each cell independently toggled, plus a show-all switch
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  const [showAll, setShowAll]   = useState(false);
+  const [showAll, setShowAll]   = useState(true);
 
   useEffect(() => { params.then(({ id }) => setFileKey(id)); }, [params]);
 
