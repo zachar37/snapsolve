@@ -132,12 +132,34 @@ export default function Home() {
     didSnapRef.current = true;
 
     // ⚠️ Draw FIRST — stopCamera sets srcObject=null which blanks the video.
-    // If we stop first we capture a black frame.
-    canvas.width  = w;
-    canvas.height = h;
+    // Crop to the frame overlay area so Claude sees only the puzzle, not background.
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0, w, h);
+
+    // Frame overlay is 88vw wide × 96vw tall, centered in the video display area
+    const containerW = video.clientWidth  || window.innerWidth;
+    const containerH = video.clientHeight || window.innerHeight;
+    const frameW_px  = containerW * 0.88;
+    const frameH_px  = containerW * 0.96;
+    const frameX_px  = (containerW - frameW_px) / 2;
+    const frameY_px  = (containerH - frameH_px) / 2;
+
+    // Map screen pixels → video pixels (object-cover scales to fill container)
+    const coverScale = Math.max(containerW / w, containerH / h);
+    const dispW      = w * coverScale;
+    const dispH      = h * coverScale;
+    const offX       = (containerW - dispW) / 2;  // negative = video wider than display
+    const offY       = (containerH - dispH) / 2;
+
+    const srcX = Math.max(0, (frameX_px - offX) / coverScale);
+    const srcY = Math.max(0, (frameY_px - offY) / coverScale);
+    const srcW = Math.min(frameW_px / coverScale, w - srcX);
+    const srcH = Math.min(frameH_px / coverScale, h - srcY);
+
+    // Output at fixed high resolution (13×80 × 14×80) for Claude
+    canvas.width  = 1040;
+    canvas.height = 1120;
+    ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, 1040, 1120);
 
     // Now safe to stop the stream
     stopCamera();
@@ -357,7 +379,7 @@ export default function Home() {
 
         {/* Focus frame */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className={`relative w-[80vw] h-[80vw] max-w-[340px] max-h-[340px] border-2 rounded-2xl transition-all duration-300 shadow-lg ${frameBorder}`}>
+          <div className={`relative w-[88vw] h-[96vw] border-2 rounded-2xl transition-all duration-300 shadow-lg ${frameBorder}`}>
             {(['tl','tr','bl','br'] as const).map(c => (
               <div key={c} className={`absolute w-6 h-6 border-2 rounded-sm
                 ${focusState === 'locked' || focusState === 'snapping' ? 'border-emerald-400' : 'border-white/70'}
